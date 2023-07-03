@@ -1,0 +1,109 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(EnsCat)
+library(class)
+library(caret)
+library(gmodels)
+library(mltest)
+```
+
+
+
+
+```{r}
+poker_train <- read.csv("poker-hand-training-true.data")
+poker_test <- read.csv("poker-hand-testing.data")
+
+hist(poker_train[,11])
+
+poker_cards_train = poker_train %>% select(1:10)
+poker_cards_test = poker_test %>% select(1:10)
+poker_hand_train = poker_train %>% select(11)
+poker_hand_test = poker_test %>% select(11)
+
+train_suits <- poker_cards_train %>% select(1, 3, 5, 7, 9)
+train_values <- poker_cards_train %>% select(2, 4, 6, 8, 10)
+
+var_names <- c("S1", "C1", "S2", "C2", "S3", "C3", "S4", "C4", "S5", "C5")
+colnames(poker_cards_test) <- var_names
+colnames(poker_cards_train) <- var_names
+
+# looking at the distribution of suits and cards as well as means
+boxplot(train_suits)
+colMeans(train_suits)
+
+boxplot(train_values)
+colMeans(train_values)
+
+# checking to see if the proportion of hands is roughly even between test and train data
+prop.table(table(poker_test[,11]))
+prop.table(table(poker_train[,11]))
+
+# Data transformation: new data frame with 18 columns. 
+# 1 column for each rank 1-13
+# 4 columns for frequency of suits 1-4
+# 1 column for outcome (unchanged)
+
+rank <- c(seq(1, 13))
+suit <- c("clubs", "diamonds", "hearts","spades")
+```
+
+```{r}
+lineartransform <- function(df){
+  dfnew <- data.frame(matrix(ncol = 18, nrow = nrow(df)))
+  dfnew[is.na(dfnew)] <- 0
+  colnames(dfnew) <- c(rank, suit, "hand")
+  
+  dfnew$hand <- df[,11]
+
+  for (i in 1:nrow(df)){
+    for (j in 1:5){
+      card <- 2*j
+      suit <- 2*j-1
+      index <- df[i, card]
+      newsuit <- df[i, suit] + 13
+      dfnew[i, index] <- dfnew[i, index] + 1
+      dfnew[i, newsuit] <- dfnew[i, newsuit] + 1
+    }
+  }
+  return(dfnew)
+  rm(dfnew)
+}
+
+traindata_transformed <- lineartransform(poker_train)
+
+# test data is too large to transform, let's take a sample. 
+
+test_sample <- slice_sample(poker_test, n = 100000)
+testdata_transformed <- lineartransform(test_sample)
+
+
+```{r}
+names(traindata_transformed) <- make.names(names(traindata_transformed))
+names(testdata_transformed) <- make.names(names(testdata_transformed))
+
+trControl_mnl <- trainControl(method = "cv",
+                              number = 10,
+                              search = "grid",
+                              classProbs = TRUE,
+                              summaryFunction = multiClassSummary)
+
+tuneGrid_mnl <- expand.grid(decay = seq(-5, 5, by = 1))
+
+mn_model <- caret::train(make.names(hand) ~., data = traindata_transformed, method = 'multinom', weights = case_wts,
+                          maxit = 100,
+                          trace = FALSE, # suppress iterations
+                          tuneGrid = tuneGrid_mnl,
+                          trControl = trControl_mnl,
+                          na.action = na.exclude)
+mn_model$results %>% select(decay, AUC, Accuracy)
+
+summary(mn_model)
+
+mn_predictions <- predict(mn_model, newdata = testdata_transformed[,1:17], type = 'raw')
+table(mn_predictions, make.names(testdata_transformed$hand))
+
+
+
+```
