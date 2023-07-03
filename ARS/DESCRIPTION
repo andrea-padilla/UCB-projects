@@ -1,0 +1,14 @@
+Package: ars
+Type: Package
+Title: Adaptive Rejection Sampling
+Version: 0.1.0
+Author: Jinxuan Fan <jinxuan_fan@berkeley.edu>, Andrea Padilla <andrea.padilla@berkeley.edu>, Matthew Song <mgsong@berkeley.edu>
+Description: An adaptive rejection sampling algorithm based on the methods described in "Adaptive Rejection Sampling for Gibbs Sampling" by W.R. Gilks and P. Wild (1992).
+    The algorithm samples from any univariate log-concave density function. Using an upper envelope and lower squeezing function, the algorithm does not need to directly sample from the target function, only evaluate it. This rejection method is adaptive, meaning as the algorithm progresses, the envelope and squeezing functions converge to the true target density function, resulting in a representative sample. 
+Encoding: UTF-8
+LazyData: true
+Depends: testthat, numDeriv, assertthat
+Suggests: 
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+RoxygenNote: 7.2.2
