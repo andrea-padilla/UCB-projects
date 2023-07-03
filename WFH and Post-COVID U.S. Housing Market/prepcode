@@ -1,0 +1,117 @@
+### Pre-processing file -- updated 5/1/2023 (PP) ###
+
+### This file is set up to run with data from four lightly pre-cleaned CSV files 
+# The pre-cleaning steps are done in Excel and can be replicated according to the 
+# video at the following link:
+
+# https://www.census.gov/library/video/2020/using-api-results-for-multiple-estimates.html
+
+# along with a few additional steps
+
+# Briefly, steps include:
+# 1. Use find and replace feature in Excel to get rid of all brackets and quotation marks
+# 2. Separate state and metro-area into two separate columns 
+# 3. Realign variable names (move all after "NAME" one to the right)
+# 4. Add variable name "state" to state column
+
+
+# editable pathname 
+path <- "/Users/paigepark/repos/222/data"
+
+# packages
+library(tidyverse)
+library(naniar)
+
+# read in data and merge
+setwd(path) 
+dat21 <- read.csv("2021data.csv", header = TRUE)
+dat19 <- read.csv("2019data.csv", header = TRUE)
+dat18 <- read.csv("2018data.csv", header = TRUE)
+dat17 <- read.csv("2017data.csv", header = TRUE)
+
+# clean var names 
+data <- list(dat21,dat19,dat18,dat17)
+
+data <- lapply(data, function(x) rename(x, area = NAME, 
+                                        home_perc = DP03_0024PE, 
+                                        working_pop = DP03_0003E, 
+                                        info_est = DP03_0039E, 
+                                        info_perc = DP03_0039PE, 
+                                        med_rent = DP04_0134E, 
+                                        med_age = DP05_0018E, 
+                                        finance_est = DP03_0040E, 
+                                        finance_perc = DP03_0040PE, 
+                                        ag_est = DP03_0033E, 
+                                        ag_perc = DP03_0033PE, 
+                                        med_inc = DP03_0062E, 
+                                        unemp_perc = DP03_0009PE, 
+                                        household_size = DP02_0016E, 
+                                        renter_householdsize = DP04_0049E,
+                                        rentedhousing_perc = DP04_0047PE, 
+                                        mortgaged_housing = DP04_0093E, 
+                                        mortgaged_SMOC = DP04_0102E, 
+                                        medhousing_value = DP04_0089E, 
+                                        rent_lt15perc = DP04_0137PE, 
+                                        rent_15to20perc = DP04_0138PE,
+                                        rent_20to25perc = DP04_0139PE, 
+                                        rent_25to30perc = DP04_0140PE,
+                                        rent_30to35perc = DP04_0141PE, 
+                                        rent_gt35perc = DP04_0142PE,
+                                        met_code = metropolitan.statistical.area.micropolitan.statistical.area
+                     ))
+
+# Modify household_size variable to be numeric 
+suppressWarnings(data <- lapply(data, function(df) {
+  df$household_size <- as.numeric(df$household_size)
+  return(df)
+}))
+
+
+# cleaning, setting NA values
+numdata <- list()
+numdata <- lapply(data, function(x) x[,2:25])
+numdata <- lapply(numdata, function(y) replace_with_na_all(data = y, condition = ~.x <0))
+for (i in 1:length(numdata)) {
+  data[[i]][,2:25] <- numdata[[i]]
+}
+rm(numdata)
+                  
+# reducing variables for paired down data frames 
+reduced_2019 <- data.frame(home_19 = data[[2]]$home_perc, met_code = data[[2]]$met_code)
+reduced_2018 <- data.frame(home_18 = data[[3]]$home_perc, met_code = data[[3]]$met_code)
+reduced_2017 <- data.frame(home_17 = data[[4]]$home_perc, met_code = data[[4]]$met_code)
+reduced_2021 <- data.frame(msa = data[[1]]$area, state = data[[1]]$state,
+                           home_21 = data[[1]]$home_perc, met_code = data[[1]]$met_code)
+
+# creating df1: includes all data for 2021, just home_perc variables for other years
+list_df1 <- list(data[[1]],reduced_2019,reduced_2018,reduced_2017)
+df1 <- list_df1 %>% reduce(inner_join, by='met_code') # merge
+write.csv(df1, paste(path, 'detailed2021.csv', sep="/")) # export 
+
+
+# creating df2: includes only home percent variables
+list_df2 <- list(reduced_2021,reduced_2019,reduced_2018,reduced_2017)
+df2 <- list_df2 %>% reduce(inner_join, by='met_code') # merge
+write.csv(df2, paste(path, 'altdata_reduced.csv', sep="/")) # export 
+
+
+# creating df3: includes all variables for all years
+dat21 <- cbind(data[[1]], year=c(rep(2021,nrow(data[[1]]))))
+dat19 <- cbind(data[[2]], year=c(rep(2019,nrow(data[[2]]))))
+dat18 <- cbind(data[[3]], year=c(rep(2018,nrow(data[[3]]))))
+dat17 <- cbind(data[[4]], year=c(rep(2017,nrow(data[[4]]))))
+
+df3 <- bind_rows(dat21, dat19, dat18, dat17)
+write.csv(df3, paste(path, 'altdata_full.csv', sep="/")) # export
+
+
+# creating df4: includes all variables for 2019 and 2021
+dat21 <- cbind(data[[1]], year=c(rep(2021,nrow(data[[1]]))))
+dat19 <- cbind(data[[2]], year=c(rep(2019,nrow(data[[2]]))))
+
+df4 <- bind_rows(dat21, dat19)
+write.csv(df4, paste(path, 'pcadata.csv', sep="/")) # export
+
+  
+  
+  
