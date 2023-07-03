@@ -1,0 +1,453 @@
+---
+title: "STAT 230A Final Project Report"
+author: "Andrea Padilla"
+date: "11th May, 2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(nnet)
+library(MASS)
+library(caret)
+library(tidyr)
+library(car)
+
+tuesdata <- tidytuesdayR::tt_load('2021-03-09')
+
+bechdel <- tuesdata$raw_bechdel
+movieinfo <- tuesdata$movies
+
+colnames(movieinfo)
+
+movieinfo$clean_test <- gsub("nowomen", 0, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("notalk", 1, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("men", 2, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("ok", 3, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("dubious", 3, movieinfo$clean_test)
+
+movieinfo$clean_test <- as.numeric(movieinfo$clean_test)
+movieinfo$domgross_2013 <- as.numeric(movieinfo$domgross_2013)
+movieinfo$intgross_2013 <- as.numeric(movieinfo$intgross_2013)
+
+movieinfo <- subset(movieinfo, select = c(year, title, clean_test, budget_2013, domgross_2013,
+                                          intgross_2013, genre) )
+
+
+#I also removed some columns that are either repetitive, can't be used, or are beyond the scope of this project, like IMDB ID or actors. 
+
+#Adding one column for each genre:
+
+genres <- c("Action", "Adventure", "Animation", "Biography", "Comedy", "Crime",
+            "Documentary", "Drama", "Family", "Fantasy", "History", "Horror", "Music",
+            "Musical", "Mystery", "Romance", "Sci-Fi", "Sport", "Thriller", 
+            "Western", "War")
+
+n <- ncol(movieinfo)
+# make a column of zeroes for each genre
+movieinfo[genres] <- c(0)
+
+
+for (i in 1:length(genres)){
+  # returns index of all movies that match the genre
+  indices <- grep(genres[i], movieinfo$genre)
+  colindex <- n + i
+  
+  # now set indicator to 1 for each movie that matches the genre
+  movieinfo[indices, colindex] <- 1
+}
+
+movieinfo <- rename(movieinfo, Scifi = "Sci-Fi")
+movieinfo = subset(movieinfo, select = -c(genre) )
+
+# Dropping rows with NAs in budget and revenue columns as this will pose issues later
+movieinfo <- drop_na(movieinfo, budget_2013:intgross_2013)
+
+
+# Train-test split
+trainindex <- createDataPartition(movieinfo$clean_test, p = 0.8, list = FALSE)
+train_data <- movieinfo[trainindex, ]
+test_data <- movieinfo[-trainindex, ]
+```
+
+
+# Introduction
+
+The Bechdel test was first introduced in a 1985 strip of Alison Bechdel's "Dykes to Watch Out For", a weekly comic originally published from 1983 to 2008. In the strip titled "The Rule" (see appendix), a character describes the criteria that she uses when deciding whether or not to watch a movie: (1) there are at least two women and (2) they have a conversation that is (3) not about men. For this character, a movie is not worth watching if it does not even explore the existence and humanity of people who are not men. While gender-based discrimination and violence can and do still occur in a movie that has passed the test, this character sees the test as a baseline for a movie she would be willing to consume, and thus support. This is a very important principle, especially for lesbians, who are centered in all of Bechdel's works. For Bechdel and many other lesbians, sexuality and identity are political and it is vital to decenter men in all aspects of life. Regarding the Bechdel test, NPR's Neda Ulaby states simply: "it articulates something often missing in popular culture. Not the number of women we see on screen, but the depths of their stories and the range of their concerns."
+
+You can't always know whether a movie will pass the Bechdel test before seeing it. However, through a regression analysis, perhaps I can develop some criteria to predict whether a movie will pass or not. I'd also like to find similarities and differences in the movies that do and do not pass the test. Knowing this information would help myself and others decide whether or not to support a movie with our time and money. My results may point out what attributes are shared by movies that do not center women's experiences. We can also explore how the role of women in movies has changed over time and across genres. 
+
+# Data Description
+
+The data for this project was compiled by FiveThirtyEight and included in a TidyTuesday post, as well as an article on FiveThirtyEight titled “The Dollar-And-Cents Case Against Hollywood’s Exclusion of Women”. One simple but key finding from the data in the article from 538 is that in a sample of 1794 movies, “only half had at least one scene in which women talked to each other about something other than a man”. The data cited by 538 comes from two sources: http://bechdeltest.com/ and http://www.the-numbers.com/. The data set used for regression contains extensive information on 1,794 movies from 1970-2013. Some variables of interest in this data set include budget, release date, revenue, and genre. There is a second set of data that exists and counts movies from 1888 to 2021, but it only includes title, release year, rating on the Bechdel test, and a few identification numbers. This second data set was only used to explore ratings over the larger time interval, which spans the entire history of cinema. If this was a long term project we could work on expanding the data set used for a larger sample size. 
+
+Two important transformations were done on the data to make it a viable source for regression. First, the outcome variable needed to be converted from words to a numeric rating. This was partially to make the regression possible and keep it clean but also because the original factor has 5 levels rather than 4. In addition to the ratings "no women", "no talk", "men", and "ok", which correspond with ratings 0-3, there is "dubious". A movie is rated as "dubious" if it is between 2 and 3, there are women talking, but the conversation they have that is not about men is brief and fleeting. I decided to turn this into a passing score (3) since the Bechdel test is about a bare minimum amount of women's conversations and not necessarily an endorsement. Secondly, I performed a transformation to extract the genres. The original data set has one column for genre, with each movie potentially having multiple genres. I decided to make an indicator column for every genre in the data set. One limitation of this is that prediction would be difficult for a movie with a genre that isn't already a feature. 
+
+
+# EDA
+
+Looking at the distribution of scores over the years in Figure 1, prior to about 1920 most movies scored a zero. After 1920 we see all 4 ratings but can't quite see the proportions from this visual. Putting this information into a relative frequency table we can see the following:
+
+```{r, echo=FALSE, warning=FALSE}
+print("Relative frequencies of ratings from complete data, 1888-2021")
+table(bechdel$rating)/nrow(bechdel)
+
+print("Relative frequencies of ratings, 1970-2013")
+table(movieinfo$clean_test)/nrow(movieinfo)
+```
+
+In both tables we can see that overall 80% of scores are 1 or 3, with over half of all movies passing the test. This presents the biggest challenge of this problem: class imbalance. We see a smaller proportion of movies scoring 0, but the same goes for movies scoring a 3. This isn't a strong indication that scores have changed over time.
+
+Before running any models I also wanted to compare scores between genres. I hypothesized that the romance genre would score better than the action genre. A dot plot likely wouldn't give much useful information due to the categorical outcome so we'll look at a table instead. 
+
+```{r, echo=FALSE}
+print("Bechdel test scores for non-action movies (0) and action movies (1)")
+actiontable <- table(movieinfo$clean_test, movieinfo$Action)
+actiontable
+colSums(actiontable)
+```
+The right column tells us specifically how action movies perform on the Bechdel test, but the left column can help us compare to all non-action movies. The proportions of scores is not consistent across action movies and non-action movies. Below we can see that the majority, 66%, of romance movies pass the Bechdel test compared to 37% of action movies. 
+
+```{r, echo=FALSE}
+print("Bechdel test scores for non-romance movies (0) and romance movies (1)")
+romancetable <- table(movieinfo$clean_test, movieinfo$Romance)
+romancetable
+colSums(romancetable)
+```
+
+
+
+# Model Selection
+
+The data was split into 80% training data and 20% test data in order to evaluate models on unseen data. Scaling was also performed on the year, budget, and revenue variables to get them to match the genre variables in magnitude. I didn't find any difference in accuracy when using scaled or original data but I chose to keep the scaled data.
+
+The main models trained were multinomial logistic and proportional odds. I initially hypothesized that the proportional odds model would work best because there is an ordinal quality to the response variable. The two models handled the imbalance in classes very differently. To begin with, the multinomial logistic model only predicted scores of 1 and 3. This makes sense as they make up 80% of the data. By only predicting the two largest classes, a regular multinomial model does still retain 51% accuracy on test data. The AIC for this first model and many to follow was around 3,000, which we can compare to think about model fit later. The proportional odds model on the other hand, predicts all four classes nearly equally. Since the scores of 0 and 2 make up only 20% of the data, this gave accuracy of only about 20-25%, and it had a similar AIC.
+
+After these initial models, I decided to adapt the weights to reflect the distribution of scores. If given more time, I would like to train the weights through cross-validation. Proportional weights only exacerbated the class imbalance for the multinomial model, and inverse weights overcompensated. As a medium between equal weights and inverse weights I selected weights that were inversely proportional to the square root of the frequency. I tried other options for weighting but didn't find anything that was significantly better, and didn't want to make it overly complicated. The weighting did not improve overall accuracy, it remains at around 53%, but the proportion of classifications when predicting is closer to the true distribution of scores. AIC for this model is around 300, only one-tenth of the original multinomial and ordinal models.
+
+On the other hand, the proportional odds model was hardly responsive to changes in weights. Using the same weights that were best for the multinomial model produced predictions with only 25% accuracy. The AIC is even lower at only 230 but it essentially has no predictive power. The initial proportional odds model had reasonable coefficient estimates and interpretations but as weights were changed they lost interpretability as well as reliability.
+
+# Discussion
+
+Class imbalance is a tricky problem and I have not found a perfect solution to it. I found value and insight in both types of model. I appreciate the amount of information in the proportional odds model with the general summary function. I was able to get diagnostics on the multinomial model using the "dropterms" function from the MASS package but that information took time to find. Overall I prefer the multinomial logistic model because it is much more responsive to tuning, though model accuracy wasn't particularly better. The chi-square test results for the final multinomial model are quite high for all coefficients, but lower p-values only resulted with lower accuracy in this case. The multinomial model has a decay parameter that can be tuned through cross-validation but the results I got from that were not significant. I was optimistic that weighting would improve the proportional odds model but it was indifferent to weights. 
+
+In all models, the most significant variables consistently were year, budget, adventure, animation, action, crime, documentary, family, horror, music, romance, thriller, and war. Of those, the variables that are positively correlated with the Bechdel test score are romance, music, horror, family, and year. The positive and negative correlations are about as I expected. Horror was a bit of a surprise initially but it makes sense that women in horror movies have more pressing matters to discuss than their relationships with men. Though year is positively correlated with higher Bechdel scores, the coefficient is small which was anticipated after looking at the distribution of scores over time. Action and war were consistenly the most significant negatively correlated with higher Bechdel test scores.
+
+# Conclusion
+
+Imbalance in Bechdel test scores proved to be the main difficulty of this problem. While this issue was not solved, insights were gained from proportional odds and multinomial logistic models. The multinomial logistic model is most receptive to weights which leads me to believe it would perform better on other unseen data. 
+
+# Additional Work & Appendix
+
+## EDA: 
+Reading data in and changing scores to 0-3:
+```{r}
+tuesdata <- tidytuesdayR::tt_load('2021-03-09')
+
+bechdel <- tuesdata$raw_bechdel
+movieinfo <- tuesdata$movies
+
+colnames(movieinfo)
+
+movieinfo$clean_test <- gsub("nowomen", 0, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("notalk", 1, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("men", 2, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("ok", 3, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("dubious", 3, movieinfo$clean_test)
+
+movieinfo$clean_test <- as.numeric(movieinfo$clean_test)
+movieinfo$domgross_2013 <- as.numeric(movieinfo$domgross_2013)
+movieinfo$intgross_2013 <- as.numeric(movieinfo$intgross_2013)
+
+movieinfo <- subset(movieinfo, select = c(year, title, clean_test, budget_2013, domgross_2013,
+                                          intgross_2013, genre) )
+
+```
+
+I also removed some columns that are either repetitive, can't be used, or are beyond the scope of this project, like IMDB ID or actors. 
+
+Adding one column for each genre:
+```{r}
+genres <- c("Action", "Adventure", "Animation", "Biography", "Comedy", "Crime",
+            "Documentary", "Drama", "Family", "Fantasy", "History", "Horror", "Music",
+            "Musical", "Mystery", "Romance", "Sci-Fi", "Sport", "Thriller", 
+            "Western", "War")
+
+n <- ncol(movieinfo)
+# make a column of zeroes for each genre
+movieinfo[genres] <- c(0)
+
+
+for (i in 1:length(genres)){
+  # returns index of all movies that match the genre
+  indices <- grep(genres[i], movieinfo$genre)
+  colindex <- n + i
+  
+  # now set indicator to 1 for each movie that matches the genre
+  movieinfo[indices, colindex] <- 1
+}
+
+movieinfo <- rename(movieinfo, Scifi = "Sci-Fi")
+movieinfo = subset(movieinfo, select = -c(genre) )
+
+# Dropping rows with NAs in budget and revenue columns as this will pose issues later
+movieinfo <- drop_na(movieinfo, budget_2013:intgross_2013)
+
+```
+
+
+```{r}
+# Train-test split
+trainindex <- createDataPartition(movieinfo$clean_test, p = 0.8, list = FALSE)
+train_data <- movieinfo[trainindex, ]
+test_data <- movieinfo[-trainindex, ]
+
+# Scaling
+scaled_train <- train_data
+scaled_train[,c(1, 4:6)] <- scale(train_data[,c(1, 4:6)])
+
+scaled_test <- test_data
+scaled_test[,c(1, 4:6)] <- scale(test_data[,c(1, 4:6)])
+
+```
+
+## Initial models
+
+### Initial multinomial model with all relevant variables
+```{r}
+model1 <- multinom(train_data$clean_test ~ .-title, data = train_data, MaxNWts = 14395)
+model1
+exp(coef(model1))
+
+# Checking predictions
+predictions <- predict(model1, type = 'class')
+table(predictions)/length(predictions)
+table(train_data$clean_test)/nrow(train_data)
+```
+
+### Initial proportional odds model
+```{r}
+model.ordinal <- ordinal::clm(factor(clean_test) ~ ., data = scaled_train)
+summary(model.ordinal)
+
+ord_prdctns <- predict(model.ordinal, newdata = scaled_test, type = 'class')
+table(test_data$clean_test, ord_prdctns[[1]])
+mean(test_data$clean_test == ord_prdctns[[1]])
+```
+
+### Multinomial model with tuning for decay
+```{r}
+trControl_mnl <- trainControl(method = "cv",
+                              number = 10,
+                              search = "grid",
+                              classProbs = TRUE,
+                              summaryFunction = multiClassSummary)
+
+tuneGrid_mnl <- expand.grid(decay = seq(0, 1, by = 0.1))
+
+model_mnl <- caret::train(make.names(clean_test) ~ ., data = train_data, 
+                         method = 'multinom',
+                          maxit = 100,
+                          trace = FALSE, # suppress iterations
+                          tuneGrid = tuneGrid_mnl,
+                          trControl = trControl_mnl,
+                          na.action = na.exclude
+                          )
+
+model_mnl$results
+```
+The model isn't very adaptive to different values of decay, so I didn't choose any of them.
+
+### Multinomial model with proportional weights
+```{r}
+inv_wts <-(table(train_data$clean_test))
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+
+model6 <- multinom(train_data$clean_test ~ ., MaxNWts = 14395, weights = case_wts)
+model6
+exp(coef(model6))
+
+# Checking predictions
+predictions <- predict(model6, newdata = test_data, type = "class")
+table(predictions)/length(predictions)
+table(test_data$clean_test)/nrow(test_data)
+table(predictions, test_data$clean_test)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+
+```
+
+### Multinomial model with inverse weights
+```{r}
+inv_wts <-1/(table(train_data$clean_test))
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+
+
+model7 <- multinom(train_data$clean_test ~ ., data = train_data, MaxNWts = 14395, weights = case_wts)
+
+exp(coef(model7))
+
+# Checking predictions
+predictions <- predict(model7, newdata = test_data, type = 'class')
+table(predictions)/length(predictions)
+table(test_data$clean_test)/nrow(test_data)
+table(predictions, test_data$clean_test)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+
+```
+
+### Ordinal model with scaled data and proportional weights
+
+```{r}
+inv_wts <-table(train_data$clean_test)
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+
+ordinal_scaled <- ordinal::clm(factor(clean_test) ~ ., data = scaled_train, weights = case_wts)
+
+summary(ordinal_scaled)
+
+ordinalpredict <- predict(ordinal_scaled, newdata = scaled_test, type = 'class')
+table(ordinalpredict)
+table(scaled_test$clean_test, ordinalpredict$fit)
+sum(diag(table(scaled_test$clean_test, ordinalpredict$fit)))/nrow(test_data)
+
+```
+### Ordinal model with scaled data and inverse weights
+```{r}
+inv_wts <-1/table(train_data$clean_test)
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+scaled_train <- train_data
+scaled_train[,c(1, 4:6)] <- scale(train_data[,c(1, 4:6)])
+
+scaled_test <- test_data
+scaled_test[,c(1, 4:6)] <- scale(test_data[,c(1, 4:6)])
+
+
+ordinal_scaled <- ordinal::clm(factor(clean_test) ~ ., data = scaled_train, weights = case_wts)
+summary(ordinal_scaled)
+ordinalpredict <- predict(ordinal_scaled, newdata = scaled_test, type = 'class')
+table(ordinalpredict)
+table(scaled_test$clean_test, ordinalpredict$fit)
+sum(diag(table(scaled_test$clean_test, ordinalpredict$fit)))/nrow(test_data)
+
+```
+
+### Ordinal model with scaled data and inverse square root weights
+
+```{r}
+inv_wts <-(table(train_data$clean_test))^{1/2}
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+scaled_train <- train_data
+scaled_train[,c(1, 4:6)] <- scale(train_data[,c(1, 4:6)])
+
+scaled_test <- test_data
+scaled_test[,c(1, 4:6)] <- scale(test_data[,c(1, 4:6)])
+
+
+ordinal_scaled <- ordinal::clm(factor(clean_test) ~ ., data = scaled_train, weights = case_wts)
+summary(ordinal_scaled)
+ordinalpredict <- predict(ordinal_scaled, newdata = scaled_test, type = 'class')
+table(ordinalpredict)
+table(scaled_test$clean_test, ordinalpredict$fit)
+sum(diag(table(scaled_test$clean_test, ordinalpredict$fit)))/nrow(test_data)
+
+```
+
+### Smaller multinomial model with inverse square root weights
+
+```{r}
+inv_wts <-1/(table(train_data$clean_test))^{1/2}
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+
+#  multinomial model with all relevant variables and scaled data
+scaled_ml <- multinom(scaled_train$clean_test ~ year + Action + War 
+                      + Romance + Horror, data = scaled_train, MaxNWts = 14395, weights = case_wts)
+
+summary(scaled_ml)
+exp(coef(scaled_ml))
+
+# Checking predictions
+predictions <- predict(scaled_ml, newdata = scaled_test)
+table(predictions)/length(predictions)
+table(test_data$clean_test)/nrow(test_data)
+table(predictions, test_data$clean_test)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+
+```
+
+```{r}
+dropterm(scaled_ml, trace = FALSE, test = "Chisq")
+```
+
+
+## Final model
+```{r}
+inv_wts <-1/(table(train_data$clean_test))^{1/2}
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+
+#  multinomial model with all relevant variables and scaled data
+scaled_ml <- multinom(scaled_train$clean_test ~ ., data = scaled_train, MaxNWts = 14395, weights = case_wts)
+
+summary(scaled_ml)
+exp(coef(scaled_ml))
+
+# Checking predictions
+predictions <- predict(scaled_ml, newdata = scaled_test)
+table(predictions)/length(predictions)
+table(test_data$clean_test)/nrow(test_data)
+table(predictions, test_data$clean_test)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+
+```
+
+```{r}
+dropterm(scaled_ml, trace = FALSE, test = "Chisq")
+```
+
+## "The Rule"
+```{r, echo=FALSE, out.width='100%'}
+knitr::include_graphics('bechdeltest.png')
+```
+
+# References
+
+* Tidy Tuesday: https://github.com/rfordatascience/tidytuesday/blob/master/data/2021/2021-03-09/readme.md
+
+* "The Dollar-And-Cents Case Against Hollywood’s Exclusion of Women", Five Thirty Eight,  https://fivethirtyeight.com/features/the-dollar-and-cents-case-against-hollywoods-exclusion-of-women/
+
+* "The 'Bechdel Rule,' Defining Pop-Culture Character", NPR, https://www.npr.org/templates/story/story.php?storyId=94202522

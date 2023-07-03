@@ -1,0 +1,351 @@
+---
+title: "STAT 230A Project"
+author: "Andrea Padilla"
+date: "4/24/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(nnet)
+library(MASS)
+library(caret)
+library(tidyr)
+library(car)
+```
+# Introduction
+```{r}
+# Reading in the data using the tidytuesday package
+tuesdata <- tidytuesdayR::tt_load('2021-03-09')
+
+bechdel <- tuesdata$raw_bechdel
+movieinfo <- tuesdata$movies
+
+head(bechdel)
+colnames(bechdel)
+
+head(movieinfo)
+colnames(movieinfo)
+
+# An example of a movie with a Bechdel test score of 0.
+bechdel[which.min(bechdel$rating),]
+
+# An example of a movie with a Bechdel test score of 3. 
+bechdel[which.max(bechdel$rating),]
+
+plot(bechdel$year, bechdel$rating)
+
+
+```
+The right side of the plot only tells us that in current history, movies are scoring 0-3 across the board. The left side of the plot tells us that up until about 1920, it was uncommon for a movie to score above a 0 on the Bechdel test. Unfortunately there is not complete data on movies prior to 1970. We cannot see from this plot any trends in scores from 1970 onward. 
+
+
+# Cleaning 
+
+The first part of cleaning involves turning some of these covariates from characters to ordinal or categorical values. The outcome variable in particular, which is the Bechdel test score. As we see below, there are 5 levels in this dataset which is not ideal. In the comic strip and in the literature, a movie can earn a score from 0-3. "nowomen" clearly corresponds with a score of 0, "notalk" with a score of 1, "men" with a score of 2, and "ok" with a score of 3. On the other hand, "dubious" is not yet interpretable. 
+```{r}
+table(movieinfo$clean_test)
+table(movieinfo$clean_test)/nrow(movieinfo)
+
+```
+
+Let's look for a few examples of movies with a "dubious" score. 
+```{r}
+head(movieinfo[grep("dubious", movieinfo$clean_test),])
+```
+
+If we visit the Bechdel test website for Iron Man 3, we find the following comment from a user: "There is a scene where Maya Hansen and Pepper Potts talk about Mayas boss and about The Mandarin, but in the middle of the conversation they talk about Mayas work wich, in this part of the conversation, [had] nothing to do with men." After looking at a few other examples, this seems to be typical. A dubious pass typically means that the women may be speaking about a man but the amount that they speak together about something else is incredibly brief. Whether or not this counts as a pass is a decision that needs to be made. The Bechdel test website does count "dubious" as a pass. As of now I will consider trying both ways for my regression and seeing if there is any difference. It is important to remember that passing the Bechdel test isn't necessarily an achievement, but a bare minimum benchmark. That makes me inclined to consider "dubious" a pass. Now we'll use regular expressions to turn the test score into an ordinal outcome. 
+
+```{r}
+movieinfo$clean_test <- gsub("nowomen", 0, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("notalk", 1, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("men", 2, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("ok", 3, movieinfo$clean_test)
+movieinfo$clean_test <- gsub("dubious", 3, movieinfo$clean_test)
+
+movieinfo$clean_test <- as.numeric(movieinfo$clean_test)
+movieinfo$domgross_2013 <- as.numeric(movieinfo$domgross_2013)
+movieinfo$intgross_2013 <- as.numeric(movieinfo$intgross_2013)
+
+
+hist(movieinfo$clean_test)
+table(movieinfo$clean_test)
+plot(movieinfo$clean_test, movieinfo$budget)
+plot(movieinfo$clean_test, movieinfo$domgross_2013)
+pairs(clean_test ~ budget_2013 + domgross_2013+ year, data = movieinfo)
+
+table(movieinfo$genre[grep("0", movieinfo$clean_test)])
+
+# Remove unnecessary columns
+
+movieinfo <- subset(movieinfo, select = c(year, title, clean_test, budget_2013, domgross_2013,
+                                          intgross_2013, genre) )
+```
+
+I would also like to introduce some variables that take genre into account. If we look at the genre column, most movies have more than one genre listed. This makes it impossible to assign each genre to a number and use a simple categorical variable. Instead, one option is to create one indicator variable for each genre. 
+
+
+```{r}
+head(movieinfo$genre)
+table(movieinfo$genre)
+
+# making variables for each genre possible
+genres <- c("Action", "Adventure", "Animation", "Biography", "Comedy", "Crime",
+            "Documentary", "Drama", "Family", "Fantasy", "History", "Horror", "Music",
+            "Musical", "Mystery", "Romance", "Sci-Fi", "Sport", "Thriller", 
+            "Western", "War")
+
+n <- ncol(movieinfo)
+# make a column of zeroes for each genre
+movieinfo[genres] <- c(0)
+
+
+for (i in 1:length(genres)){
+  # returns index of all movies that match the genre
+  indices <- grep(genres[i], movieinfo$genre)
+  colindex <- n + i
+  
+  # now set indicator to 1 for each movie that matches the genre
+  movieinfo[indices, colindex] <- 1
+}
+
+movieinfo <- rename(movieinfo, Scifi = "Sci-Fi")
+movieinfo = subset(movieinfo, select = -c(genre) )
+```
+
+# EDA
+
+We can now extract some information on genres. 
+
+```{r}
+actiontable <- table(movieinfo$clean_test, movieinfo$Action)
+actiontable
+colSums(actiontable)
+```
+The right column tells us specifically how action movies perform on the Bechdel test, but the left column can help us compare to all non-action movies. The proportions of scores is not consistent across action movies and non-action movies. We can do the same for a movie genre that we suspect may have better performance on the Bechdel test. 
+
+```{r}
+romancetable <- table(movieinfo$clean_test, movieinfo$Romance)
+romancetable
+colSums(romancetable)
+```
+
+We can see that the majority, 66%, of romance movies pass the Bechdel test compared to 37% of action movies. 
+
+# Initial Modeling
+
+```{r}
+# Train-test split
+trainindex <- createDataPartition(movieinfo$clean_test, p = 0.8, list = FALSE)
+train_data <- movieinfo[trainindex, ]
+test_data <- movieinfo[-trainindex, ]
+
+# Initial multinomial model with all relevant variables
+model1 <- multinom(train_data$clean_test ~ .-title, data = train_data, MaxNWts = 14395)
+model1
+exp(coef(model1))
+
+# Checking predictions
+predictions <- predict(model1, type = 'class')
+table(predictions)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+```
+
+
+As we can see from above, the initial model gives only 53% accuracy. It only predicts ones and threes. I believe this is because of the imbalance in classes. looking back at the histogram of scores, ones and threes make up 81% of the entire dataset. Let's check the balance in the train and test sets.
+
+
+```{r}
+hist(train_data$clean_test)
+
+hist(test_data$clean_test)
+
+```
+
+I'm also curious about trying a proportional odds outcome, since our outcome variable is truly more ordinal than categorical. 
+
+```{r}
+model2 <- MASS::polr(factor(train_data$clean_test) ~ .-title, data = train_data)
+model2
+predictions2 <- predict(model2, newdata = test_data, type = 'class')
+table(predictions2, test_data$clean_test)
+sum(diag(table(predictions2, test_data$clean_test)))/nrow(test_data)
+```
+
+Running a proportional odds regression in the same fashion produces similar results, only a 2% improvement. What we need to consider next is how to train the model given the imbalance in groups. The issue is not necessarily the imbalance between the groups, but the small sample size of movies scoring 0 and 2 which means that the model is not able to find sufficient patterns in these samples. We can consider changing the threshold which decides the group number, though that doesn't solve the root problem. 
+I'd like to try again, using 90% of the data to train, to see if that makes any difference.
+
+```{r}
+
+# Initial multinomial model with all relevant variables
+model3 <- multinom(train_data$clean_test ~ year + budget_2013 + domgross_2013 +intgross_2013 + Action + Adventure + Animation + Biography + Comedy + Crime + Documentary + Drama + Family + Fantasy + History + Horror + Music + Musical + Mystery + Romance + Scifi + Sport + Thriller + Western + War, data = train_data)
+model3
+exp(coef(model3))
+
+# Checking predictions
+predictions <- predict(model3, newdata = test_data)
+table(predictions, test_data$clean_test)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+
+
+model4 <- polr(factor(train_data$clean_test) ~ year + budget_2013 + domgross_2013 +intgross_2013 + Action + Adventure + Animation + Biography + Comedy + Crime + Documentary + Drama + Family + Fantasy + History + Horror + Music + Musical + Mystery + Romance + Scifi + Sport + Thriller + Western + War, data = train_data)
+model4
+predictions2 <- predict(model4, newdata = test_data)
+table(predictions2, test_data$clean_test)
+sum(diag(table(predictions2, test_data$clean_test)))/nrow(test_data)
+
+```
+
+In both versions we have a very minor improvement. 
+
+
+```{r}
+test <- factor(train_data$clean_test, levels=0:3, ordered=TRUE)
+model5 <- polr(test ~ ., data = train_data, weights = case_wts, start = rep(1,26))
+model5
+prediction5 <- predict(model5, newdata = test_data)
+table(as.vector(prediction5), test_data$clean_test)
+sum(diag(table(prediction5, test_data$clean_test)))/nrow(test_data)
+```
+
+Now we'll try changing the weights in the multinomial model to be inverse proportional. 
+```{r}
+inv_wts <-1/(table(train_data$clean_test))
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+
+# Initial multinomial model with all relevant variables
+model6 <- multinom(train_data$clean_test ~ year + budget_2013 + domgross_2013 +intgross_2013 + Action + Adventure + Animation + Biography + Comedy + Crime + Documentary + Drama + Family + Fantasy + History + Horror + Music + Musical + Mystery + Romance + Scifi + Sport + Thriller + Western + War, data = train_data, MaxNWts = 14395, weights = case_wts)
+model6
+exp(coef(model6))
+
+# Checking predictions
+predictions <- predict(model6, newdata = test_data)
+table(predictions)/length(predictions)
+table(test_data$clean_test)/nrow(test_data)
+table(predictions, test_data$clean_test)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+
+```
+
+Trying to tune the hyperparameter which is decay - not sure what it means. 
+
+```{r}
+
+trControl_mnl <- trainControl(method = "cv",
+                              number = 10,
+                              search = "grid",
+                              classProbs = TRUE,
+                              summaryFunction = multiClassSummary)
+
+tuneGrid_mnl <- expand.grid(decay = seq(0, 1, by = 0.1))
+
+model_mnl <- caret::train(make.names(clean_test) ~ year + budget_2013 + domgross_2013 +intgross_2013 + Action + Adventure + Animation + Biography + Comedy + Crime + Documentary + Drama + Family + Fantasy + History + Horror + Music + Musical + Mystery + Romance + Scifi + Sport + Thriller + Western + War, data = train_data, 
+                         method = 'multinom',
+                          maxit = 100,
+                          trace = FALSE, # suppress iterations
+                          tuneGrid = tuneGrid_mnl,
+                          trControl = trControl_mnl,
+                          na.action = na.exclude
+                          )
+
+model_mnl$results
+```
+Even with optimal decay, the accuracy is still only 54%. Let's take a further look at how this model performs on the different classes. 
+
+```{r}
+table(predict(model_mnl, newdata = test_data[,-3], type = "raw"))
+
+```
+
+```{r}
+
+# Not all observations have predictions, some have "#N/A" in dom or int gross. need to fix
+
+
+test_data <- drop_na(test_data, budget_2013:intgross_2013)
+
+```
+
+Now trying an ordinal model because we want to be clear that 3>2>1>0.
+
+```{r}
+model.ordinal <- ordinal::clm(factor(clean_test) ~ year + budget_2013 + domgross_2013 +intgross_2013 + Action + Adventure + Animation + Biography + Comedy + Crime + Documentary + Drama + Family + Fantasy + History + Horror + Music + Musical + Mystery + Romance + Scifi + Sport + Thriller + Western + War, data = train_data)
+summary(model.ordinal)
+
+table(predict(model.ordinal, newdata = test_data, type = 'class'))
+# need to remove NAs from predictions and test in order to compare
+
+
+(table(test_data$clean_test))
+ord_prdctns <- predict(model.ordinal, newdata = test_data, type = 'class')
+table(test_data$clean_test, ord_prdctns[[1]])
+mean(test_data$clean_test == ord_prdctns[[1]])
+#, test_data$clean_test)
+
+```
+
+Accuracy on prediction is only about 20% but the model can still tell us quite a lot. It predicts a variety of values which is a pro and a con. From the regression coefficients we can guess what might be most significant and create another model with just those. The thresholds are also significant which is good because it affirms the research question. 
+
+The ordinal model is at least predicting all four classes, but they are predicted nearly equally so not great. 
+
+
+Going to try scaling and centering variables other than genre in case they are influencing regression.
+
+```{r}
+inv_wts <-table(train_data$clean_test)
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+scaled_train <- train_data
+scaled_train[,c(1, 4:6)] <- scale(train_data[,c(1, 4:6)])
+
+scaled_test <- test_data
+scaled_test[,c(1, 4:6)] <- scale(test_data[,c(1, 4:6)])
+
+
+ordinal_scaled <- ordinal::clm(factor(clean_test) ~ year + budget_2013 + domgross_2013 +intgross_2013 + Action + Adventure + Animation + Biography + Comedy + Crime + Documentary + Drama + Family + Fantasy + History + Horror + Music + Musical + Mystery + Romance + Scifi + Sport + Thriller + Western + War, data = scaled_train, weights = case_wts)
+summary(ordinal_scaled)
+ordinalpredict <- predict(ordinal_scaled, newdata = scaled_test, type = 'class')
+table(ordinalpredict)
+table(scaled_test$clean_test, ordinalpredict$fit)
+sum(diag(table(scaled_test$clean_test, ordinalpredict$fit)))/nrow(test_data)
+
+```
+
+That didn't make a difference. Let's try the scaled data on the multinomial model.
+
+```{r}
+inv_wts <- log(table(train_data$clean_test))
+case_wts <- matrix(data = 0, nrow = nrow(train_data), ncol = 1)
+
+for (i in 1:nrow(train_data)){
+  index <- train_data$clean_test[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+
+#  multinomial model with all relevant variables and scaled data
+scaled_ml <- multinom(scaled_train$clean_test ~ year + budget_2013 + domgross_2013 +intgross_2013 + Action + Adventure + Animation + Biography + Comedy + Crime + Documentary + Drama + Family + Fantasy + History + Horror + Music + Musical + Mystery + Romance + Scifi + Sport + Thriller + Western + War, data = scaled_train, MaxNWts = 14395)
+
+summary(scaled_ml)
+exp(coef(scaled_ml))
+
+# Checking predictions
+predictions <- predict(scaled_ml, newdata = scaled_test)
+table(predictions)/length(predictions)
+table(test_data$clean_test)/nrow(test_data)
+table(predictions, test_data$clean_test)
+sum(diag(table(predictions, test_data$clean_test)))/nrow(test_data)
+
+
+dropterm(scaled_ml, trace = FALSE, test = "Chisq")
+```
+That is possibly the best model. 
