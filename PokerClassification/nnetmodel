@@ -1,0 +1,161 @@
+---
+title: "Poker Hand Classification Using Neural Networks"
+author: "Andrea Padilla"
+date: "4/23/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(EnsCat)
+library(class)
+library(caret)
+library(gmodels)
+library(mltest)
+```
+
+
+
+
+```{r}
+poker_train <- read.csv("poker-hand-training-true.data")
+poker_test <- read.csv("poker-hand-testing.data")
+
+hist(poker_train[,11])
+
+poker_cards_train = poker_train %>% select(1:10)
+poker_cards_test = poker_test %>% select(1:10)
+poker_hand_train = poker_train %>% select(11)
+poker_hand_test = poker_test %>% select(11)
+
+train_suits <- poker_cards_train %>% select(1, 3, 5, 7, 9)
+train_values <- poker_cards_train %>% select(2, 4, 6, 8, 10)
+
+var_names <- c("S1", "C1", "S2", "C2", "S3", "C3", "S4", "C4", "S5", "C5")
+colnames(poker_cards_test) <- var_names
+colnames(poker_cards_train) <- var_names
+
+# looking at the distribution of suits and cards as well as means
+boxplot(train_suits)
+colMeans(train_suits)
+
+boxplot(train_values)
+colMeans(train_values)
+
+# checking to see if the proportion of hands is roughly even between test and train data
+prop.table(table(poker_test[,11]))
+prop.table(table(poker_train[,11]))
+
+# Data transformation: new data frame with 18 columns. 
+# 1 column for each rank 1-13
+# 4 columns for frequency of suits 1-4
+# 1 column for outcome (unchanged)
+
+rank <- c(seq(1, 13))
+suit <- c("clubs", "diamonds", "hearts","spades")
+```
+
+```{r}
+lineartransform <- function(df){
+  dfnew <- data.frame(matrix(ncol = 18, nrow = nrow(df)))
+  dfnew[is.na(dfnew)] <- 0
+  colnames(dfnew) <- c(rank, suit, "hand")
+  
+  dfnew$hand <- df[,11]
+
+  for (i in 1:nrow(df)){
+    for (j in 1:5){
+      card <- 2*j
+      suit <- 2*j-1
+      index <- df[i, card]
+      newsuit <- df[i, suit] + 13
+      dfnew[i, index] <- dfnew[i, index] + 1
+      dfnew[i, newsuit] <- dfnew[i, newsuit] + 1
+    }
+  }
+  return(dfnew)
+  rm(dfnew)
+}
+
+traindata_transformed <- lineartransform(poker_train)
+
+# test data is too large to transform, let's take a sample. 
+
+test_sample <- slice_sample(poker_test, n = 100000)
+testdata_transformed <- lineartransform(test_sample)
+
+
+
+poker_cards_train = traindata_transformed[,1:17]
+poker_cards_test = testdata_transformed[,1:17]
+poker_hand_train = as.matrix(traindata_transformed[,18])
+poker_hand_test = as.matrix(testdata_transformed[,18])
+```
+
+
+Neural net on untransformed data 
+```{r}
+scale_values <- function(x){(x-min(x))/(max(x)-min(x))}
+
+scaled_train <- apply(X = poker_cards_train, MARGIN = 2, FUN =  scale_values)
+scaled_train <- cbind(scaled_train, poker_hand_train)
+
+
+scaled_test <- apply(X = test_sample[,1:10], MARGIN = 2, FUN =  scale_values)
+scaled_test <- cbind(scaled_test, test_sample[,11])
+
+colnames(scaled_test) <- colnames(test_sample)
+colnames(scaled_train) <- colnames(test_sample)
+  
+untransformed_nn <- nnet(factor(hand) ~., data = scaled_train, size = 10)
+summary(untransformed_nn)
+nnet_predictions <- predict(untransformed_nn, newdata = scaled_test[,1:10], type = 'class')
+
+table(nnet_predictions, scaled_test[,11])
+
+mean(nnet_predictions==scaled_test[,11])
+
+```
+52% accuracy, only predicts classes 0-3.
+
+
+Neural net on transformed data:
+```{r}
+inv_wts <-(table(traindata_transformed$hand))
+case_wts <- matrix(data = 0, nrow = nrow(traindata_transformed), ncol = 1)
+
+for (i in 1:nrow(traindata_transformed)){
+  index <- traindata_transformed$hand[i]
+  case_wts[i] <- inv_wts[index+1]
+}
+```
+```{r}
+
+scale_values <- function(x){(x-min(x))/(max(x)-min(x))}
+
+scaled_train <- apply(X = traindata_transformed[,1:17], MARGIN = 2, FUN =  scale_values)
+scaled_train <- cbind(scaled_train, traindata_transformed[,18])
+
+
+scaled_test <- apply(X = testdata_transformed[,1:17], MARGIN = 2, FUN =  scale_values)
+scaled_test <- cbind(scaled_test, testdata_transformed[,18])
+
+colnames(scaled_test) <- colnames(traindata_transformed)
+colnames(scaled_train) <- colnames(traindata_transformed)
+  
+pokerhand_nn <- nnet(factor(hand) ~., data = scaled_train, size = 14)
+summary(pokerhand_nn)
+nnet_predictions <- predict(pokerhand_nn, newdata = scaled_test[,1:17], type = 'class')
+
+table(nnet_predictions, scaled_test[,18])
+
+mean(nnet_predictions==scaled_test[,18])
+
+# plotting neural net using function from github
+library(devtools)
+source_url('https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r')
+
+plot.nnet(pokerhand_nn)
+```
+Neither proportional nor inverse weighting have worked. Both predict the same class for all observations. We'll need to think of some more ways to weight classees if we want too continue with neural nets.
